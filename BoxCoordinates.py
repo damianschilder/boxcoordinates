@@ -7,10 +7,11 @@ import ctypes
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
-                               QFileDialog, QMessageBox, QGroupBox, QFormLayout,
-                               QPlainTextEdit, QFrame, QGridLayout)
-from PySide6.QtGui import QIcon, QPixmap, QImage, QClipboard
-from PySide6.QtCore import Qt, QThread, QObject, Signal, Slot
+                               QFileDialog, QMessageBox, QGroupBox,
+                               QPlainTextEdit, QGridLayout)
+from PySide6.QtGui import QIcon, QPixmap, QImage
+from PySide6.QtCore import (Qt, QThread, QObject, Signal, Slot, QStandardPaths,
+                            QBuffer, QIODevice)
 
 import torch
 try:
@@ -30,9 +31,9 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import requests
 from PIL import Image
-from PIL.ImageQt import ImageQt
 
 APP_NAME = "Coordinates extractor using SAM"
+APP_DIR_NAME = "BoxCoordinates"
 MODEL_TYPE = "vit_b"
 SAM_CHECKPOINT_FILENAME = "sam_vit_b_01ec64.pth"
 ICON_FILENAME = "icon.ico"
@@ -44,6 +45,11 @@ def get_base_path():
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
+
+def get_export_dir():
+    """Writable folder for annotated images: Documents/BoxCoordinates/exports."""
+    documents = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or os.path.expanduser("~")
+    return os.path.join(documents, APP_DIR_NAME, EXPORT_DIR)
 
 BASE_PATH = get_base_path()
 ICON_PATH = os.path.join(BASE_PATH, ICON_FILENAME)
@@ -88,6 +94,23 @@ def filter_and_sort_masks(masks, image_area_processed, num_lids_expected, min_ar
     elif 0 < len(lid_candidates) < num_lids_expected :
         print(f"Warning: Found {len(lid_candidates)} candidates, less than targeted {num_lids_expected}.")
     return lid_candidates
+def build_export_path(export_dir, image_path, timestamp=None):
+    base, _ = os.path.splitext(os.path.basename(image_path))
+    stamp = int(time.time() if timestamp is None else timestamp)
+    return os.path.join(export_dir, f"{base}_annotated_{stamp}.png")
+
+def save_annotated_image(qimage, image_path, export_dir, timestamp=None):
+    """Write the annotated image as PNG; raises OSError with the reason if that fails."""
+    os.makedirs(export_dir, exist_ok=True)
+    save_path = build_export_path(export_dir, image_path, timestamp)
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not qimage.save(buffer, "PNG"):
+        raise OSError("could not encode the annotated image as PNG")
+    with open(save_path, "wb") as f:
+        f.write(bytes(buffer.data()))
+    return save_path
+
 
 def run_sam_processing(image_path, params, worker_signals):
     try:
@@ -170,9 +193,9 @@ def run_sam_processing(image_path, params, worker_signals):
         img_buffer = io.BytesIO()
         fig.savefig(img_buffer, format='PNG', bbox_inches='tight', pad_inches=0, dpi=120)
         plt.close(fig)
-        img_buffer.seek(0)
-        annotated_image_pil = Image.open(img_buffer)
-        annotated_qimage = ImageQt(annotated_image_pil)
+        # QImage.fromData decodes into memory the QImage owns, so the image stays valid on
+        # its way to the GUI thread (PIL's ImageQt wraps a buffer owned by a Python object).
+        annotated_qimage = QImage.fromData(img_buffer.getvalue(), "PNG")
         worker_signals.finished.emit(lid_coordinates_list_original_scale, annotated_qimage, params)
     except Exception as e:
         import traceback
@@ -385,6 +408,7 @@ class ModernSamApp(QMainWindow):
         self.status_label = QLabel("Status: Initializing...")
         self.status_label.setObjectName("statusLabel")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)  # long save paths must not widen the window
         layout.addLayout(button_layout)
         layout.addWidget(self.status_label)
         return group
@@ -484,21 +508,24 @@ class ModernSamApp(QMainWindow):
                 self.result_text.appendPlainText(f"  Predicted IoU (SAM): {lid_info['predicted_iou']}\n")
         else:
             self.result_text.appendPlainText("No lid coordinates found with the current parameters.")
+        has_image = annotated_qimage is not None and not annotated_qimage.isNull()
         status_message_suffix = ""
-        if annotated_qimage and self.last_image_path:
-            pil_image_to_save = Image.fromqimage(annotated_qimage)
-            os.makedirs(EXPORT_DIR, exist_ok=True)
-            base, _ = os.path.splitext(os.path.basename(self.last_image_path))
-            save_filename = f"{base}_annotated_{int(time.time())}.png"
-            save_path = os.path.join(EXPORT_DIR, save_filename)
+        target = used_params.get("NUM_LIDS_TO_PROCESS")
+        if coordinates and target and len(coordinates) < target:
+            status_message_suffix += f" Found {len(coordinates)} of {target} lids."
+        if has_image and self.last_image_path:
+            # Version 1.0 saved to a relative 'exports' folder in the working directory. For the
+            # installed app that is the install folder in Program Files, which a normal user
+            # cannot write to: "Error saving annotated image."
             try:
-                pil_image_to_save.save(save_path)
-                status_message_suffix = f" Annotated image saved to {save_path}"
+                save_path = save_annotated_image(annotated_qimage, self.last_image_path, get_export_dir())
+                status_message_suffix += f" Annotated image saved to {save_path}"
+                self.result_text.appendPlainText(f"Annotated image saved to: {save_path}")
             except Exception as e:
-                status_message_suffix = " Error saving annotated image."
-                print(f"Error saving annotated image: {e}")
+                status_message_suffix += f" Error saving annotated image: {e}"
+                self.result_text.appendPlainText(f"Error saving annotated image: {e}")
         self.update_status(f"Processing complete.{status_message_suffix}", "#1C223A")
-        if annotated_qimage:
+        if has_image:
             pixmap = QPixmap.fromImage(annotated_qimage)
             self.image_panel.setPixmap(pixmap.scaled(self.image_panel.size(),
                                                     Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -592,8 +619,7 @@ if __name__ == "__main__":
 
     if DEVICE.type == 'cuda':
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    os.makedirs(EXPORT_DIR, exist_ok=True)
-    
+
     app = QApplication(sys.argv)
     window = ModernSamApp()
     window.show()
