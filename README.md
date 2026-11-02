@@ -95,12 +95,14 @@ In November 2026 I went back to it with Claude Code to find and fix those issues
    python -m pytest -q
    ```
 
-5. Build the Windows program with PyInstaller (one-folder build, which the installer script expects in `dist\BoxCoordinates\`):
+5. Build the Windows program with PyInstaller (one-folder build, which the installer script expects in `dist\BoxCoordinates\`). The two hidden imports are torchvision's native libraries, which PyInstaller's torchvision hook does not find since torchvision 0.29:
 
    ```bash
    pip install pyinstaller
-   pyinstaller --noconfirm --windowed --name BoxCoordinates --icon icon.ico --add-data "icon.ico;." BoxCoordinates.py
+   pyinstaller --noconfirm --windowed --name BoxCoordinates --icon icon.ico --add-data "icon.ico;." --hidden-import torchvision._C_stable --hidden-import torchvision.image_stable BoxCoordinates.py
    ```
+
+   To check the build, run `dist\BoxCoordinates\BoxCoordinates.exe` once with the environment variable `BOXCOORDINATES_SELFTEST=1`. It exits with 0 when everything is bundled, and writes each step to `selftest.log`.
 
 6. Compile `BoxCoordinates.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) 6. The installer is written to `Output\BoxCoordinates_setup.exe`.
 

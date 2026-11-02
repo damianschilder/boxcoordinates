@@ -800,7 +800,8 @@ def self_test():
 
     The release build on GitHub Actions runs BoxCoordinates.exe with BOXCOORDINATES_SELFTEST=1.
     It builds SAM with random weights, runs the image encoder once and creates the mask generator,
-    draws a matplotlib figure, and starts Qt. A module that PyInstaller failed to bundle makes the
+    runs torchvision's native box suppression (the mask generator needs it), draws a matplotlib
+    figure, and starts Qt. A module or native library that PyInstaller failed to bundle makes the
     exe stop with an error instead of exiting with 0.
     """
     selftest_log("all modules imported")
@@ -810,6 +811,12 @@ def self_test():
         sam.image_encoder(torch.zeros(1, 3, 1024, 1024))
     selftest_log("image encoder ran")
     SamAutomaticMaskGenerator(sam)
+    from torchvision.ops.boxes import batched_nms
+    boxes = torch.tensor([[0.0, 0.0, 10.0, 10.0], [1.0, 1.0, 11.0, 11.0], [50.0, 50.0, 60.0, 60.0]])
+    keep = batched_nms(boxes, torch.tensor([0.9, 0.8, 0.7]), torch.zeros(3, dtype=torch.long), 0.5)
+    if keep.tolist() != [0, 2]:
+        raise RuntimeError(f"batched_nms kept {keep.tolist()}, expected [0, 2]")
+    selftest_log("torchvision box suppression ran")
     fig = plt.figure()
     fig.canvas.draw()
     plt.close(fig)

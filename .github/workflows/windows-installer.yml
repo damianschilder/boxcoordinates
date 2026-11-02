@@ -75,7 +75,10 @@ jobs:
 
       - name: Build the app (PyInstaller)
         run: |
-          & "$env:WORK\venv\Scripts\pyinstaller.exe" --noconfirm --windowed --name BoxCoordinates --icon icon.ico --add-data "icon.ico;." --distpath "$env:WORK\dist" --workpath "$env:WORK\build" BoxCoordinates.py
+          # torchvision 0.29 renamed its native libraries to _C_stable and image_stable. PyInstaller's
+          # torchvision hook still asks for the old _C and image, so without these two hidden imports
+          # the bundle lacks them and importing torchvision fails ("operator torchvision::nms does not exist").
+          & "$env:WORK\venv\Scripts\pyinstaller.exe" --noconfirm --windowed --name BoxCoordinates --icon icon.ico --add-data "icon.ico;." --hidden-import torchvision._C_stable --hidden-import torchvision.image_stable --distpath "$env:WORK\dist" --workpath "$env:WORK\build" BoxCoordinates.py
           if ($LASTEXITCODE) { throw 'PyInstaller failed' }
 
       - name: Self-test of the built app
