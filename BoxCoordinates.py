@@ -147,6 +147,26 @@ def calculate_aspect_ratio(bbox):
     if h == 0 or w == 0: return 0
     return min(w / h, h / w)
 
+def sort_reading_order(anns):
+    """Order boxes in rows from top to bottom, and left to right within a row.
+
+    A plain (ymin, xmin) sort numbers a grid wrongly as soon as one box in a row sits a
+    few pixels higher than its left neighbour. Boxes whose vertical centres lie within
+    half a (median) box height of the first box of a row belong to that row.
+    """
+    if not anns:
+        return []
+    heights = sorted(ann['bbox'][3] for ann in anns)
+    tolerance = max(heights[len(heights) // 2] / 2, 1)
+    rows = []
+    for ann in sorted(anns, key=lambda a: a['bbox'][1] + a['bbox'][3] / 2):
+        centre_y = ann['bbox'][1] + ann['bbox'][3] / 2
+        if rows and centre_y - rows[-1][0] <= tolerance:
+            rows[-1][1].append(ann)
+        else:
+            rows.append((centre_y, [ann]))
+    return [ann for _, row in rows for ann in sorted(row, key=lambda a: a['bbox'][0])]
+
 def filter_and_sort_masks(masks, image_area_processed, num_lids_expected, min_area_frac, max_area_frac, min_aspect_ratio):
     lid_candidates = []
     for ann in masks:
@@ -158,15 +178,46 @@ def filter_and_sort_masks(masks, image_area_processed, num_lids_expected, min_ar
         if not (aspect_ratio >= min_aspect_ratio):
             continue
         lid_candidates.append(ann)
-    lid_candidates.sort(key=lambda ann: (ann['bbox'][1], ann['bbox'][0]))
     if len(lid_candidates) > num_lids_expected:
         lid_candidates.sort(key=lambda ann: ann['area'], reverse=True)
-        selected_candidates = lid_candidates[:num_lids_expected]
-        selected_candidates.sort(key=lambda ann: (ann['bbox'][1], ann['bbox'][0]))
-        lid_candidates = selected_candidates
+        lid_candidates = lid_candidates[:num_lids_expected]
     elif 0 < len(lid_candidates) < num_lids_expected :
         print(f"Warning: Found {len(lid_candidates)} candidates, less than targeted {num_lids_expected}.")
-    return lid_candidates
+    return sort_reading_order(lid_candidates)
+
+def compute_sam_input_size(width, height, max_dim=MAX_IMAGE_DIMENSION):
+    """Size of the image handed to SAM: the longest side is capped at max_dim."""
+    if width <= max_dim and height <= max_dim:
+        return width, height
+    if width > height:
+        return max_dim, max(1, int(height * (max_dim / width)))
+    return max(1, int(width * (max_dim / height))), max_dim
+
+def _ceil_div(a, b):
+    return -(-a // b)
+
+def scale_bbox_to_original(bbox, sam_size, original_size):
+    """Map a SAM box (x, y, w, h) in the resized image to inclusive (xmin, ymin, xmax, ymax)
+    in the original image.
+
+    SAM's x + w and y + h are the last pixel of the mask, so they are inclusive. One resized
+    pixel covers original/resized original pixels: the right and bottom edges map to the
+    end of that span, not to its start. Integer arithmetic keeps the result exact.
+    """
+    x, y, w, h = (int(round(v)) for v in bbox)
+    sam_w, sam_h = sam_size
+    orig_w, orig_h = original_size
+    xmin = x * orig_w // sam_w
+    ymin = y * orig_h // sam_h
+    xmax = _ceil_div((x + w + 1) * orig_w, sam_w) - 1
+    ymax = _ceil_div((y + h + 1) * orig_h, sam_h) - 1
+    clamp = lambda v, hi: min(max(v, 0), hi)
+    return clamp(xmin, orig_w - 1), clamp(ymin, orig_h - 1), clamp(xmax, orig_w - 1), clamp(ymax, orig_h - 1)
+
+def format_coordinate_lines(coordinates):
+    """The machine-readable output: one 'xmin,ymin,xmax,ymax' line per lid."""
+    return "\n".join(f"{c['xmin']},{c['ymin']},{c['xmax']},{c['ymax']}" for c in coordinates)
+
 def build_export_path(export_dir, image_path, timestamp=None):
     base, _ = os.path.splitext(os.path.basename(image_path))
     stamp = int(time.time() if timestamp is None else timestamp)
@@ -195,12 +246,7 @@ def run_sam_processing(image_path, params, worker_signals):
         scale_w, scale_h = 1.0, 1.0
         if original_width > MAX_IMAGE_DIMENSION or original_height > MAX_IMAGE_DIMENSION:
             worker_signals.status_updated.emit(f"Resizing to max {MAX_IMAGE_DIMENSION}px on longest side...", "#1C223A")
-            if original_width > original_height:
-                new_width = MAX_IMAGE_DIMENSION
-                new_height = int(original_height * (MAX_IMAGE_DIMENSION / original_width))
-            else:
-                new_height = MAX_IMAGE_DIMENSION
-                new_width = int(original_width * (MAX_IMAGE_DIMENSION / original_height))
+            new_width, new_height = compute_sam_input_size(original_width, original_height)
             image_pil_for_sam = image_pil_original.resize((new_width, new_height), Image.Resampling.LANCZOS)
             scale_w = original_width / new_width
             scale_h = original_height / new_height
@@ -209,6 +255,7 @@ def run_sam_processing(image_path, params, worker_signals):
             image_pil_for_sam = image_pil_original.copy()
         image_rgb_np_sam = np.array(image_pil_for_sam)
         image_area_sam = image_rgb_np_sam.shape[0] * image_rgb_np_sam.shape[1]
+        sam_size = (image_rgb_np_sam.shape[1], image_rgb_np_sam.shape[0])
         worker_signals.status_updated.emit(f"Loading SAM model ({MODEL_TYPE})...", "#1C223A")
         checkpoint_path = find_sam_checkpoint()
         if checkpoint_path is None:
@@ -242,10 +289,10 @@ def run_sam_processing(image_path, params, worker_signals):
         worker_signals.status_updated.emit(f"Identified {len(identified_lids_resized_coords)} lid candidates.", "#1C223A")
         lid_coordinates_list_original_scale = []
         for i, ann_resized in enumerate(identified_lids_resized_coords):
-            x_r, y_r, w_r, h_r = ann_resized['bbox']
+            xmin, ymin, xmax, ymax = scale_bbox_to_original(ann_resized['bbox'], sam_size,
+                                                            (original_width, original_height))
             lid_coordinates_list_original_scale.append({
-                "lid_index": i, "xmin": int(x_r * scale_w), "ymin": int(y_r * scale_h),
-                "xmax": int((x_r + w_r) * scale_w), "ymax": int((y_r + h_r) * scale_h),
+                "lid_index": i, "xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
                 "area": int(ann_resized['area'] * scale_w * scale_h),
                 "predicted_iou": f"{ann_resized.get('predicted_iou', 0):.4f}"
             })
@@ -569,11 +616,7 @@ class ModernSamApp(QMainWindow):
         self.result_text.appendPlainText("--- Parameters Used for this Run ---")
         self.result_text.appendPlainText(json.dumps(used_params, indent=2) + "\n")
         if coordinates:
-            coord_lines = []
-            for lid_info in coordinates:
-                line = f"{lid_info['xmin']},{lid_info['ymin']},{lid_info['xmax']},{lid_info['ymax']}"
-                coord_lines.append(line)
-            self.coordinate_text.setPlainText("\n".join(coord_lines))
+            self.coordinate_text.setPlainText(format_coordinate_lines(coordinates))
             self.result_text.appendPlainText("--- Identified Lid Coordinates (Original Image Scale) ---")
             for lid_info in coordinates:
                 self.result_text.appendPlainText(f"Lid {lid_info['lid_index']}:")
