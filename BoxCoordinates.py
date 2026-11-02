@@ -268,12 +268,28 @@ def save_annotated_image(qimage, image_path, export_dir, timestamp=None):
         f.write(bytes(buffer.data()))
     return save_path
 
+def load_image_rgb(image_path):
+    """Open an image as 8-bit RGB for SAM.
+
+    16-bit and float images (common for scientific TIFF scans) are stretched to 0-255
+    first; a direct convert("RGB") clips them and can turn the scan almost white.
+    """
+    image = Image.open(image_path)
+    if image.mode in ("I;16", "I;16L", "I;16B", "I;16N", "I", "F"):
+        values = np.asarray(image, dtype=np.float64)
+        low, high = float(values.min()), float(values.max())
+        if high > low:
+            values = (values - low) * (255.0 / (high - low))
+        else:
+            values = np.zeros_like(values)
+        image = Image.fromarray(np.round(values).astype(np.uint8))
+    return image.convert("RGB")
 
 def run_sam_processing(image_path, params, worker_signals):
     try:
         worker_signals.status_updated.emit(f"Using device: {DEVICE}", "#1C223A")
         worker_signals.status_updated.emit(f"Loading image: {os.path.basename(image_path)}...", "#1C223A")
-        image_pil_original = Image.open(image_path).convert("RGB")
+        image_pil_original = load_image_rgb(image_path)
         original_width, original_height = image_pil_original.size
         worker_signals.status_updated.emit(f"Original image size: {original_width}x{original_height}", "#1C223A")
         scale_w, scale_h = 1.0, 1.0
