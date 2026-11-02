@@ -770,7 +770,31 @@ class ModernSamApp(QMainWindow):
         self.worker_thread.wait()
         event.accept()
 
+def self_test():
+    """Checks the packaged app without a model file, a network or a visible window.
+
+    The release build on GitHub Actions runs BoxCoordinates.exe with BOXCOORDINATES_SELFTEST=1.
+    It builds SAM with random weights, runs the image encoder once and creates the mask generator,
+    draws a matplotlib figure, and starts Qt. A module that PyInstaller failed to bundle makes the
+    exe stop with an error instead of exiting with 0.
+    """
+    sam = sam_model_registry[MODEL_TYPE]()
+    with torch.no_grad():
+        sam.image_encoder(torch.zeros(1, 3, 1024, 1024))
+    SamAutomaticMaskGenerator(sam)
+    fig = plt.figure()
+    fig.canvas.draw()
+    plt.close(fig)
+    app = QApplication(sys.argv)
+    QWidget().show()
+    app.processEvents()
+    return 0
+
+
 if __name__ == "__main__":
+    if os.environ.get("BOXCOORDINATES_SELFTEST") == "1":
+        sys.exit(self_test())
+
     myappid = 'DamianSchilder.BoxCoordinates'
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)

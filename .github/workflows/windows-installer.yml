@@ -1,0 +1,134 @@
+name: Windows installer
+
+# Builds the Windows installers on a GitHub-hosted Windows machine, so no local Windows build tools
+# are needed. Every run keeps the installers as workflow artifacts for two weeks. Pushing a tag
+# v<version> (for example v1.1, matching MyAppVersion in BoxCoordinates.iss) also publishes them
+# as a GitHub release, with that version's section of CHANGELOG.md as the release notes.
+#
+# Two builds of the same app:
+#   BoxCoordinates_setup.exe      PyTorch with CUDA 13.0: uses an NVIDIA GPU (RTX 20 series or
+#                                 newer, recent driver) when there is one, else the CPU.
+#   BoxCoordinates_setup_cpu.exe  PyTorch for the CPU only: a much smaller download.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.variant }})
+    runs-on: windows-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: gpu
+            torch_index: https://download.pytorch.org/whl/cu130
+            installer: BoxCoordinates_setup
+          - variant: cpu
+            torch_index: https://download.pytorch.org/whl/cpu
+            installer: BoxCoordinates_setup_cpu
+    env:
+      PIP_NO_CACHE_DIR: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      # The GPU build needs about 12 GB; C: has more room than the D: work drive.
+      WORK: C:\bc
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Check the version
+        run: |
+          $iss = Get-Content BoxCoordinates.iss -Raw
+          if ($iss -match '#define MyAppVersion "([^"]+)"') { $version = $Matches[1] } else { throw 'No MyAppVersion in BoxCoordinates.iss' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match version $version in BoxCoordinates.iss"
+          }
+          "Version $version"
+          Get-PSDrive C, D | Format-Table Name, @{n='Free GB'; e={[math]::Round($_.Free / 1GB, 1)}}
+
+      - name: Install the dependencies
+        run: |
+          python -m venv "$env:WORK\venv"
+          $py = "$env:WORK\venv\Scripts\python.exe"
+          & $py -m pip install torch torchvision --index-url ${{ matrix.torch_index }}
+          if ($LASTEXITCODE) { throw 'pip install torch failed' }
+          & $py -m pip install -r requirements.txt pyinstaller pytest
+          if ($LASTEXITCODE) { throw 'pip install failed' }
+          & $py -c "import torch; print('torch', torch.__version__, 'CUDA build', torch.version.cuda)"
+
+      - name: Tests
+        run: |
+          & "$env:WORK\venv\Scripts\python.exe" -m pytest -q
+          if ($LASTEXITCODE) { throw 'tests failed' }
+
+      - name: Build the app (PyInstaller)
+        run: |
+          & "$env:WORK\venv\Scripts\pyinstaller.exe" --noconfirm --windowed --name BoxCoordinates --icon icon.ico --add-data "icon.ico;." --distpath "$env:WORK\dist" --workpath "$env:WORK\build" BoxCoordinates.py
+          if ($LASTEXITCODE) { throw 'PyInstaller failed' }
+
+      - name: Self-test of the built app
+        env:
+          BOXCOORDINATES_SELFTEST: '1'
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # A missing module makes the windowed exe show an error box and keep running, so a
+          # self-test that does not exit with 0 within the time limit counts as a failure.
+          $p = Start-Process "$env:WORK\dist\BoxCoordinates\BoxCoordinates.exe" -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw 'The self-test did not finish within 5 minutes' }
+          if ($p.ExitCode -ne 0) { throw "The self-test exited with code $($p.ExitCode)" }
+          'Self-test passed'
+
+      - name: Build the installer (Inno Setup)
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DDistDir=$env:WORK\dist" "/O$env:WORK\Output" "/F${{ matrix.installer }}" BoxCoordinates.iss
+          if ($LASTEXITCODE) { throw "Inno Setup failed with code $LASTEXITCODE" }
+          $file = Get-Item "$env:WORK\Output\${{ matrix.installer }}.exe"
+          '{0}: {1:N0} bytes' -f $file.Name, $file.Length
+          if ($file.Length -ge 2GB) { throw "$($file.Name) is over 2 GiB, the GitHub limit for a release file" }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.installer }}
+          path: C:\bc\Output\${{ matrix.installer }}.exe
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish the release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" 'index($0, "## " v) == 1 { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" installers/*.exe --title "BoxCoordinates ${GITHUB_REF_NAME#v}" --notes-file notes.md

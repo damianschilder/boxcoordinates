@@ -26,7 +26,10 @@ It ships as a standalone Windows program with an installer, so it can be used wi
 
 ## Download
 
-Download `BoxCoordinates_setup.exe` from the **[Releases page](https://github.com/damianschilder/BoxCoordinates/releases/latest)** (Windows, 64-bit), run it, and start **BoxCoordinates** from the Start menu.
+Download an installer from the **[Releases page](https://github.com/damianschilder/BoxCoordinates/releases/latest)** (Windows, 64-bit), run it, and start **BoxCoordinates** from the Start menu:
+
+* `BoxCoordinates_setup.exe` uses an NVIDIA graphics card (RTX 20 series or newer, with a recent driver) when there is one, which makes processing much faster, and the processor otherwise.
+* `BoxCoordinates_setup_cpu.exe` uses the processor only. It is a much smaller download, for computers without an NVIDIA card.
 
 ## How to use
 
@@ -100,6 +103,8 @@ In November 2026 I went back to it with Claude Code to find and fix those issues
    ```
 
 6. Compile `BoxCoordinates.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) 6. The installer is written to `Output\BoxCoordinates_setup.exe`.
+
+Releases are built by GitHub Actions (`.github/workflows/windows-installer.yml`) on a Windows machine at GitHub, so no local Windows tools are needed. Each build runs the tests and the PyInstaller build. It then runs a self-test of the built exe (`BOXCOORDINATES_SELFTEST=1`: SAM with random weights, no model file or network) and builds both installers. Run it by hand from the Actions tab to get the installers as artifacts; push a tag such as `v1.1` to publish them as a release.
 
 ## Acknowledgements
 

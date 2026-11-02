@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1 (November 2026, not yet released)
+## 1.1 (November 2026)
 
 Bug fixes made with Claude Code. The workflow, parameters, look and the `xmin,ymin,xmax,ymax` output format are unchanged.
 
@@ -21,6 +21,8 @@ Bug fixes made with Claude Code. The workflow, parameters, look and the `xmin,ym
 
 ### Changed
 
+- Two installers: `BoxCoordinates_setup.exe` (PyTorch with CUDA 13.0: uses an NVIDIA RTX 20 series or newer card when present, the processor otherwise) and the much smaller `BoxCoordinates_setup_cpu.exe` (processor only).
+- The installers are built by GitHub Actions on a Windows machine. Each build first runs the tests and a self-test of the built exe.
 - Installer script renamed from `test.iss` to `BoxCoordinates.iss`, with paths relative to the repository instead of `C:\Users\Laptop\...`, and version 1.1.
 - README: the download and install steps match the actual release (an installer, not a single exe), the build steps are complete again, and there is a "How it was built" section.
 - Added `requirements.txt`, an offline test suite (`tests/`, SAM replaced by a fake), and `.gitignore` entries for virtual environments, model checkpoints and build output.

@@ -9,6 +9,10 @@
 #define MyAppPublisher "Damian Schilder"
 #define MyAppURL "https://github.com/damianschilder/BoxCoordinates"
 #define MyAppExeName "BoxCoordinates.exe"
+; The PyInstaller output folder. The GitHub build passes its own with /DDistDir=...
+#ifndef DistDir
+  #define DistDir "dist"
+#endif
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -47,8 +51,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "dist\BoxCoordinates\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\BoxCoordinates\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#DistDir}\BoxCoordinates\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DistDir}\BoxCoordinates\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
