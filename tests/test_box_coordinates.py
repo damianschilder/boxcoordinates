@@ -1,7 +1,6 @@
 """Offline tests for the non-GUI logic. SAM itself is replaced by a fake: no model download."""
 import hashlib
 import os
-import stat
 
 import cv2
 import numpy as np
@@ -101,14 +100,12 @@ def test_save_annotated_image_creates_folder(tmp_path):
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write anywhere")
 def test_save_annotated_image_reports_the_reason(tmp_path):
-    readonly = tmp_path / "Program Files"
-    readonly.mkdir()
-    readonly.chmod(stat.S_IRUSR | stat.S_IXUSR)
-    try:
-        with pytest.raises(OSError):
-            bc.save_annotated_image(QImage(4, 4, QImage.Format.Format_RGB32), "x.png", str(readonly / "exports"))
-    finally:
-        readonly.chmod(0o755)
+    # A file where the export folder should be makes the folder impossible to create on every
+    # system. (A read-only folder does not: Windows ignores the read-only flag on folders.)
+    blocked = tmp_path / "exports"
+    blocked.write_text("")
+    with pytest.raises(OSError):
+        bc.save_annotated_image(QImage(4, 4, QImage.Format.Format_RGB32), "x.png", str(blocked))
 
 
 # --- input --------------------------------------------------------------------
