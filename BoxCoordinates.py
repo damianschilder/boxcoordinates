@@ -5,6 +5,7 @@ import io
 import json
 import ctypes
 import hashlib
+import math
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
@@ -141,6 +142,38 @@ PARAM_EXPLANATIONS = {
     "SAM_POINTS_PER_SIDE": "SAM generator: Points per side for grid sampling. Higher is more detailed but slower (e.g., 16-100).",
     "SAM_MIN_MASK_REGION_AREA": "SAM generator: Discards raw mask regions smaller than this pixel area."
 }
+PARAM_LABELS = {
+    "NUM_LIDS_TO_PROCESS": "Num Lids Target:", "MIN_LID_AREA_FRACTION": "Min Area Fraction:", "MAX_LID_AREA_FRACTION": "Max Area Fraction:",
+    "MIN_ASPECT_RATIO_FILTER": "Min Aspect Ratio:", "SAM_POINTS_PER_SIDE": "SAM Pts/Side:", "SAM_MIN_MASK_REGION_AREA": "SAM Min Mask Area:"
+}
+INT_PARAMS = ("NUM_LIDS_TO_PROCESS", "SAM_POINTS_PER_SIDE", "SAM_MIN_MASK_REGION_AREA")
+MAX_POINTS_PER_SIDE = 256
+
+def parse_params(raw_values):
+    """Parse the text of the parameter fields. Returns (params, None) or (None, error message)."""
+    params = {}
+    for key, text in raw_values.items():
+        label = PARAM_LABELS[key].rstrip(":")
+        cleaned = text.strip().replace(",", ".")  # accept a decimal comma (0,01)
+        try:
+            value = int(cleaned) if key in INT_PARAMS else float(cleaned)
+        except ValueError:
+            kind = "a whole number" if key in INT_PARAMS else "a number"
+            return None, f"{label} must be {kind} (got '{text}')."
+        if not math.isfinite(value):
+            return None, f"{label} must be a finite number."
+        params[key] = value
+    if params["NUM_LIDS_TO_PROCESS"] < 1:
+        return None, "Num Lids Target must be at least 1."
+    if not (1 <= params["SAM_POINTS_PER_SIDE"] <= MAX_POINTS_PER_SIDE):
+        return None, f"SAM Pts/Side must be between 1 and {MAX_POINTS_PER_SIDE}."
+    if params["SAM_MIN_MASK_REGION_AREA"] < 0:
+        return None, "SAM Min Mask Area cannot be negative."
+    if not (0 < params["MIN_LID_AREA_FRACTION"] < params["MAX_LID_AREA_FRACTION"] < 1):
+        return None, "Area Fractions must satisfy: 0 < Min < Max < 1"
+    if not (0 < params["MIN_ASPECT_RATIO_FILTER"] <= 1):
+        return None, "Min Aspect Ratio must be between 0 and 1"
+    return params, None
 
 def calculate_aspect_ratio(bbox):
     x, y, w, h = bbox
@@ -494,10 +527,7 @@ class ModernSamApp(QMainWindow):
         layout.setSpacing(10)
         layout.setContentsMargins(15, 25, 15, 15)
         self.param_inputs = {}
-        param_config = [
-            ("NUM_LIDS_TO_PROCESS", "Num Lids Target:"), ("MIN_LID_AREA_FRACTION", "Min Area Fraction:"), ("MAX_LID_AREA_FRACTION", "Max Area Fraction:"),
-            ("MIN_ASPECT_RATIO_FILTER", "Min Aspect Ratio:"), ("SAM_POINTS_PER_SIDE", "SAM Pts/Side:"), ("SAM_MIN_MASK_REGION_AREA", "SAM Min Mask Area:")
-        ]
+        param_config = list(PARAM_LABELS.items())
         num_items = len(param_config)
         items_per_row = (num_items + 1) // 2
         for i, (key, label_text) in enumerate(param_config):
@@ -672,23 +702,11 @@ class ModernSamApp(QMainWindow):
             self.update_status("No coordinates to copy.", "#FF7900")
 
     def _get_current_params_from_gui(self):
-        current_params = {}
-        try:
-            for key, widget in self.param_inputs.items():
-                if key in ["NUM_LIDS_TO_PROCESS", "SAM_POINTS_PER_SIDE", "SAM_MIN_MASK_REGION_AREA"]:
-                    current_params[key] = int(widget.text())
-                else:
-                    current_params[key] = float(widget.text())
-            if not (0 < current_params["MIN_LID_AREA_FRACTION"] < current_params["MAX_LID_AREA_FRACTION"] < 1):
-                QMessageBox.warning(self, "Input Error", "Area Fractions must satisfy: 0 < Min < Max < 1")
-                return None
-            if not (0 < current_params["MIN_ASPECT_RATIO_FILTER"] <= 1):
-                QMessageBox.warning(self, "Input Error", "Min Aspect Ratio must be between 0 and 1")
-                return None
-            return current_params
-        except ValueError:
-            QMessageBox.critical(self, "Input Error", "Invalid number found in parameters.")
+        current_params, error_message = parse_params({key: widget.text() for key, widget in self.param_inputs.items()})
+        if error_message:
+            QMessageBox.warning(self, "Input Error", error_message)
             return None
+        return current_params
         
     def _start_processing(self, image_path):
         current_params = self._get_current_params_from_gui()
