@@ -7,6 +7,27 @@ import ctypes
 import hashlib
 import math
 
+# Self-test mode (BOXCOORDINATES_SELFTEST=1, see self_test()). The packaged exe has no console, and
+# an uncaught error there opens a dialog that nobody can click on a build server. So every step
+# and any error go to a log file instead, and an error ends the process with code 3.
+SELFTEST = os.environ.get("BOXCOORDINATES_SELFTEST") == "1"
+
+
+def selftest_log(text):
+    if SELFTEST:
+        with open(os.environ.get("BOXCOORDINATES_SELFTEST_LOG", "selftest.log"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {text}\n")
+
+
+if SELFTEST:
+    def _selftest_excepthook(kind, value, tb):
+        import traceback
+        selftest_log("ERROR\n" + "".join(traceback.format_exception(kind, value, tb)))
+        os._exit(3)
+
+    sys.excepthook = _selftest_excepthook
+    selftest_log(f"start, frozen={getattr(sys, 'frozen', False)}")
+
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
                                QFileDialog, QMessageBox, QGroupBox,
@@ -15,10 +36,14 @@ from PySide6.QtGui import QIcon, QPixmap, QImage
 from PySide6.QtCore import (Qt, QThread, QObject, Signal, Slot, QStandardPaths,
                             QBuffer, QIODevice)
 
+selftest_log("PySide6 imported")
 import torch
+selftest_log(f"torch {torch.__version__} imported")
 try:
     from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
 except ImportError:
+    if SELFTEST:
+        raise
     try:
         app = QApplication(sys.argv)
         error_title = "SAM Lid Coordinate Extractor - Critical Error"
@@ -778,21 +803,26 @@ def self_test():
     draws a matplotlib figure, and starts Qt. A module that PyInstaller failed to bundle makes the
     exe stop with an error instead of exiting with 0.
     """
+    selftest_log("all modules imported")
     sam = sam_model_registry[MODEL_TYPE]()
+    selftest_log("SAM built with random weights")
     with torch.no_grad():
         sam.image_encoder(torch.zeros(1, 3, 1024, 1024))
+    selftest_log("image encoder ran")
     SamAutomaticMaskGenerator(sam)
     fig = plt.figure()
     fig.canvas.draw()
     plt.close(fig)
+    selftest_log("matplotlib drew a figure")
     app = QApplication(sys.argv)
     QWidget().show()
     app.processEvents()
+    selftest_log("Qt started; self-test passed")
     return 0
 
 
 if __name__ == "__main__":
-    if os.environ.get("BOXCOORDINATES_SELFTEST") == "1":
+    if SELFTEST:
         sys.exit(self_test())
 
     myappid = 'DamianSchilder.BoxCoordinates'

@@ -81,12 +81,18 @@ jobs:
       - name: Self-test of the built app
         env:
           BOXCOORDINATES_SELFTEST: '1'
+          BOXCOORDINATES_SELFTEST_LOG: C:\bc\selftest.log
           QT_QPA_PLATFORM: offscreen
         run: |
-          # A missing module makes the windowed exe show an error box and keep running, so a
-          # self-test that does not exit with 0 within the time limit counts as a failure.
+          # The windowed exe has no console: the self-test writes each step and any error to the
+          # log, which is printed here. No exit with 0 within 5 minutes counts as a failure.
           $p = Start-Process "$env:WORK\dist\BoxCoordinates\BoxCoordinates.exe" -PassThru
-          if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw 'The self-test did not finish within 5 minutes' }
+          $finished = $p.WaitForExit(300000)
+          if (-not $finished) { Stop-Process -Id $p.Id -Force }
+          '--- self-test log'
+          if (Test-Path $env:BOXCOORDINATES_SELFTEST_LOG) { Get-Content $env:BOXCOORDINATES_SELFTEST_LOG } else { '(no log: the exe never reached Python)' }
+          '---'
+          if (-not $finished) { throw 'The self-test did not finish within 5 minutes' }
           if ($p.ExitCode -ne 0) { throw "The self-test exited with code $($p.ExitCode)" }
           'Self-test passed'
 

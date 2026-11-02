@@ -26,3 +26,4 @@ venv/
 
 # Annotated images when running from source (older versions wrote here)
 /exports/
+selftest.log
