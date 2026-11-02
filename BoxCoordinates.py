@@ -29,6 +29,11 @@ except ImportError:
     sys.exit(1)
 
 import numpy as np
+import matplotlib
+# The annotated figure is drawn in the worker thread. With a QApplication running,
+# matplotlib would otherwise pick its Qt backend and create Qt widgets outside the
+# GUI thread, which Qt does not allow.
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import requests
@@ -345,16 +350,19 @@ def run_sam_processing(image_path, params, worker_signals):
                 "area": int(ann_resized['area'] * scale_w * scale_h),
                 "predicted_iou": f"{ann_resized.get('predicted_iou', 0):.4f}"
             })
+        # Blend the masks (50% colour) into the image with numpy and draw it with one imshow.
+        # One full-size overlay per lid kept matplotlib's image resampler, which holds the
+        # GIL, busy for seconds, and that froze the GUI thread at the end of every run.
+        lid_colors = [(np.random.random(), np.random.random(), np.random.random()) for _ in identified_lids_resized_coords]
+        blended = image_rgb_np_sam.astype(np.float32) / 255.0
+        for ann_resized, random_color in zip(identified_lids_resized_coords, lid_colors):
+            m = ann_resized['segmentation']
+            blended[m] = blended[m] * 0.5 + np.asarray(random_color, dtype=np.float32) * 0.5
         fig, ax = plt.subplots(1, figsize=(10, 8), facecolor='#FDFBF5')
-        ax.imshow(image_rgb_np_sam)
+        ax.imshow(blended)
         ax.set_autoscale_on(False)
         ax.axis('off')
-        for i, ann_resized in enumerate(identified_lids_resized_coords):
-            m = ann_resized['segmentation']
-            random_color = (np.random.random(), np.random.random(), np.random.random())
-            color_overlay_viz = np.ones((m.shape[0], m.shape[1], 3))
-            color_overlay_viz[:,:,0], color_overlay_viz[:,:,1], color_overlay_viz[:,:,2] = random_color
-            ax.imshow(np.dstack((color_overlay_viz, m * 0.5)))
+        for i, (ann_resized, random_color) in enumerate(zip(identified_lids_resized_coords, lid_colors)):
             x_bbox, y_bbox, w_bbox, h_bbox = ann_resized['bbox']
             rect = patches.Rectangle((x_bbox, y_bbox), w_bbox, h_bbox, linewidth=2, edgecolor=random_color, facecolor='none')
             ax.add_patch(rect)
