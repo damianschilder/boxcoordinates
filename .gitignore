@@ -1,14 +1,28 @@
-sam_vit_b_01ec64.pth
+# SAM model checkpoints (downloaded at first run, ~375 MB)
+*.pth
+*.pth.part
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and tool caches
+.pytest_cache/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.spec
 
-# PyInstaller folders
+# PyInstaller and Inno Setup output
 /build/
 /dist/
+/Output/
+
+# Annotated images when running from source (older versions wrote here)
+/exports/
