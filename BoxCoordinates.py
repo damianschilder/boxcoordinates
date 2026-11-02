@@ -4,6 +4,7 @@ import time
 import io
 import json
 import ctypes
+import hashlib
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QLineEdit,
@@ -38,13 +39,28 @@ MODEL_TYPE = "vit_b"
 SAM_CHECKPOINT_FILENAME = "sam_vit_b_01ec64.pth"
 ICON_FILENAME = "icon.ico"
 SAM_MODEL_DOWNLOAD_URL = f"https://dl.fbaipublicfiles.com/segment_anything/{SAM_CHECKPOINT_FILENAME}"
+SAM_CHECKPOINT_SIZE = 375042383  # bytes
+SAM_CHECKPOINT_SHA256 = "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912"
 MAX_IMAGE_DIMENSION = 1280
 EXPORT_DIR = "exports"
 
 def get_base_path():
+    """Folder with the bundled resources (the icon): sys._MEIPASS in the frozen exe."""
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
+
+def get_user_data_dir():
+    """Writable per-user folder for the downloaded model.
+
+    The install folder (Program Files) is not writable without admin rights, and
+    sys._MEIPASS of a one-file exe is a temporary folder that is deleted on exit.
+    """
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    else:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(root, APP_DIR_NAME)
 
 def get_export_dir():
     """Writable folder for annotated images: Documents/BoxCoordinates/exports."""
@@ -53,8 +69,65 @@ def get_export_dir():
 
 BASE_PATH = get_base_path()
 ICON_PATH = os.path.join(BASE_PATH, ICON_FILENAME)
-SAM_CHECKPOINT_PATH = os.path.join(BASE_PATH, SAM_CHECKPOINT_FILENAME)
+# A downloaded checkpoint goes here.
+SAM_CHECKPOINT_PATH = os.path.join(get_user_data_dir(), SAM_CHECKPOINT_FILENAME)
+# Also accepted: a checkpoint placed next to the exe (or the script), and the
+# location used by version 1.0, so an existing download is not fetched again.
+EXTRA_CHECKPOINT_DIRS = [os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else BASE_PATH,
+                         BASE_PATH]
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def is_complete_checkpoint(path):
+    if not os.path.isfile(path):
+        return False
+    return SAM_CHECKPOINT_SIZE is None or os.path.getsize(path) == SAM_CHECKPOINT_SIZE
+
+def find_sam_checkpoint():
+    """Path of a complete SAM checkpoint, or None. Incomplete files are ignored."""
+    candidates = [SAM_CHECKPOINT_PATH] + [os.path.join(d, SAM_CHECKPOINT_FILENAME) for d in EXTRA_CHECKPOINT_DIRS]
+    for path in candidates:
+        if is_complete_checkpoint(path):
+            return path
+    return None
+
+class DownloadCancelled(Exception):
+    pass
+
+def download_checkpoint(url, dest_path, expected_size=None, expected_sha256=None,
+                        progress_callback=None, cancel_requested=None):
+    """Download to dest_path + '.part', verify size and SHA-256, then move into place.
+
+    A failed, cancelled or truncated download never leaves a file at dest_path.
+    """
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    part_path = dest_path + ".part"
+    sha256 = hashlib.sha256()
+    bytes_downloaded = 0
+    try:
+        with requests.get(url, stream=True, timeout=(30, 120)) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0)) or (expected_size or 0)
+            with open(part_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if cancel_requested and cancel_requested():
+                        raise DownloadCancelled("Download cancelled.")
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    sha256.update(chunk)
+                    bytes_downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(bytes_downloaded, total_size)
+        if expected_size is not None and bytes_downloaded != expected_size:
+            raise IOError(f"Download incomplete: got {bytes_downloaded} of {expected_size} bytes.")
+        if expected_sha256 is not None and sha256.hexdigest() != expected_sha256:
+            raise IOError("Downloaded file is corrupt (SHA-256 checksum mismatch).")
+        os.replace(part_path, dest_path)
+    finally:
+        if os.path.exists(part_path):
+            try: os.remove(part_path)
+            except OSError: pass
+    return dest_path
 
 DEFAULT_PARAMS = {
     "NUM_LIDS_TO_PROCESS": 6, "MIN_LID_AREA_FRACTION": 0.01, "MAX_LID_AREA_FRACTION": 0.30,
@@ -137,10 +210,11 @@ def run_sam_processing(image_path, params, worker_signals):
         image_rgb_np_sam = np.array(image_pil_for_sam)
         image_area_sam = image_rgb_np_sam.shape[0] * image_rgb_np_sam.shape[1]
         worker_signals.status_updated.emit(f"Loading SAM model ({MODEL_TYPE})...", "#1C223A")
-        if not os.path.exists(SAM_CHECKPOINT_PATH):
+        checkpoint_path = find_sam_checkpoint()
+        if checkpoint_path is None:
             worker_signals.error.emit(f"SAM checkpoint missing: {SAM_CHECKPOINT_PATH}.")
             return
-        sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT_PATH)
+        sam = sam_model_registry[MODEL_TYPE](checkpoint=checkpoint_path)
         sam.to(device=DEVICE)
         sam.eval()
         mask_generator = SamAutomaticMaskGenerator(
@@ -212,34 +286,35 @@ class SamWorker(QObject):
     def __init__(self):
         super().__init__()
         self.signals = WorkerSignals()
+        self.cancel_requested = False  # set from the GUI thread when the window closes
     @Slot(str, dict)
     def run_processing(self, image_path, params):
         run_sam_processing(image_path, params, self.signals)
     @Slot()
     def download_model(self):
+        self.signals.download_progress.emit("Downloading SAM checkpoint...", "#1C223A")
+        start_time = time.time()
+        last_report = [0.0]
+        def report_progress(bytes_downloaded, total_size):
+            now = time.time()
+            if now - last_report[0] < 0.25:  # don't flood the GUI thread with updates
+                return
+            last_report[0] = now
+            elapsed_time = now - start_time
+            speed = bytes_downloaded / elapsed_time / (1024*1024) if elapsed_time > 0 else 0
+            if total_size > 0:
+                progress = (bytes_downloaded / total_size) * 100
+                self.signals.download_progress.emit(f"Downloading... {progress:.1f}% ({speed:.2f} MB/s)", "#1C223A")
+            else:
+                self.signals.download_progress.emit(f"Downloading... {bytes_downloaded / (1024*1024):.0f} MB ({speed:.2f} MB/s)", "#1C223A")
         try:
-            self.signals.download_progress.emit("Downloading SAM checkpoint...", "#1C223A")
-            response = requests.get(SAM_MODEL_DOWNLOAD_URL, stream=True, timeout=300)
-            response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
-            bytes_downloaded = 0
-            start_time = time.time()
-            with open(SAM_CHECKPOINT_PATH, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192 * 16):
-                    if chunk:
-                        f.write(chunk)
-                        bytes_downloaded += len(chunk)
-                        if total_size > 0:
-                            progress = (bytes_downloaded / total_size) * 100
-                            elapsed_time = time.time() - start_time
-                            speed = bytes_downloaded / elapsed_time / (1024*1024) if elapsed_time > 0 else 0
-                            self.signals.download_progress.emit(f"Downloading... {progress:.1f}% ({speed:.2f} MB/s)", "#1C223A")
+            download_checkpoint(SAM_MODEL_DOWNLOAD_URL, SAM_CHECKPOINT_PATH,
+                                expected_size=SAM_CHECKPOINT_SIZE, expected_sha256=SAM_CHECKPOINT_SHA256,
+                                progress_callback=report_progress,
+                                cancel_requested=lambda: self.cancel_requested)
             self.signals.download_finished.emit("SAM Checkpoint downloaded. Ready.", "#2E7D32")
         except Exception as e:
             self.signals.download_finished.emit(f"Error downloading model: {e}", "#FF7900")
-            if os.path.exists(SAM_CHECKPOINT_PATH):
-                try: os.remove(SAM_CHECKPOINT_PATH)
-                except Exception as rm_e: print(f"Could not remove partial download: {rm_e}")
 
 class ModernSamApp(QMainWindow):
     start_processing_signal = Signal(str, dict)
@@ -461,7 +536,7 @@ class ModernSamApp(QMainWindow):
         self.worker_thread.start()
 
     def check_sam_model(self):
-        if not os.path.exists(SAM_CHECKPOINT_PATH):
+        if find_sam_checkpoint() is None:
             self.update_status(f"SAM Checkpoint '{SAM_CHECKPOINT_FILENAME}' not found.", "#FF7900")
             reply = QMessageBox.question(self, "Download Model?",
                                          f"SAM checkpoint '{SAM_CHECKPOINT_FILENAME}' not found.\nDownload it now? (~350MB)",
@@ -588,7 +663,7 @@ class ModernSamApp(QMainWindow):
         self.start_processing_signal.emit(image_path, current_params)
 
     def select_image_and_process(self):
-        if not os.path.exists(SAM_CHECKPOINT_PATH):
+        if find_sam_checkpoint() is None:
             QMessageBox.critical(self, "Model Missing", f"SAM checkpoint '{SAM_CHECKPOINT_FILENAME}' not found.")
             self.check_sam_model()
             return
@@ -606,6 +681,7 @@ class ModernSamApp(QMainWindow):
         self._start_processing(self.last_image_path)
 
     def closeEvent(self, event):
+        self.sam_worker.cancel_requested = True  # stops a running model download
         self.worker_thread.quit()
         self.worker_thread.wait()
         event.accept()
