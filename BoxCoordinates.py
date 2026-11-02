@@ -337,7 +337,6 @@ def run_sam_processing(image_path, params, worker_signals):
             params["MIN_ASPECT_RATIO_FILTER"]
         )
         if not identified_lids_resized_coords:
-            worker_signals.finished.emit([], None, params)
             worker_signals.error.emit("Could not identify lid candidates after filtering.")
             return
         worker_signals.status_updated.emit(f"Identified {len(identified_lids_resized_coords)} lid candidates.", "#1C223A")
@@ -772,7 +771,7 @@ class ModernSamApp(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    myappid = 'mycompany.myproduct.subproduct.version'
+    myappid = 'DamianSchilder.BoxCoordinates'
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except AttributeError:
