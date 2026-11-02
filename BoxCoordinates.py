@@ -372,7 +372,8 @@ class ModernSamApp(QMainWindow):
         layout = QVBoxLayout(group)
         layout.setContentsMargins(0,0,0,0)
         button_layout = QHBoxLayout()
-        self.select_button = QPushButton("Select Image & Process")
+        # A single '&' marks a keyboard shortcut in Qt and is not drawn; '&&' shows a literal '&'.
+        self.select_button = QPushButton("Select Image && Process")
         self.select_button.clicked.connect(self.select_image_and_process)
         self.retry_button = QPushButton("Retry with Current Params")
         self.retry_button.clicked.connect(self.retry_processing)
@@ -413,7 +414,7 @@ class ModernSamApp(QMainWindow):
         return group
 
     def _create_results_text_panel(self):
-        group = QGroupBox("Processing Log & Full Results")
+        group = QGroupBox("Processing Log && Full Results")
         layout = QVBoxLayout(group)
         layout.setContentsMargins(10, 20, 10, 10)
         self.result_text = QPlainTextEdit()
