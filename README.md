@@ -1,6 +1,6 @@
 # Coordinates Extractor using SAM
 
-A Windows desktop app that runs Meta's Segment Anything Model (SAM) locally to find the lids of containers in a scanned image and export their bounding-box coordinates.
+A Windows desktop app that puts Meta's open-source Segment Anything Model (SAM) to work on a research problem, running locally on the researcher's own computer. It was built for research into fungi as a more sustainable building material: it finds the lids of the fungus containers in a scanned image and exports their bounding-box coordinates.
 
 ![screenshot2](https://github.com/user-attachments/assets/c622615e-e02e-4037-a9d8-242b6272b181)
 
@@ -8,9 +8,9 @@ A Windows desktop app that runs Meta's Segment Anything Model (SAM) locally to f
 
 ## About the project
 
-The tool was built for a researcher at Utrecht University who selected the coordinates of fungus container lids by hand. Her research scans the containers at time intervals and measures fungal growth through the grey values inside those coordinates.
+The tool was built for a researcher at Utrecht University who studies fungi in building materials, as a more sustainable alternative to conventional ones. Her research scans containers of fungi at time intervals and measures their growth through the grey values inside each container's coordinates. Before this tool, she selected the coordinates of the container lids by hand.
 
-The app puts a graphical interface on the Segment Anything Model: load an image, set the filter parameters, and get machine-readable coordinates for the objects it finds. It keeps the objects ("lids") that match a target count, size and shape.
+The app hands that step to SAM, an open-source model by Meta AI that runs on her own computer: no cloud service and no account, and the scans never leave the machine. The only download is the model itself, once. A graphical interface puts the model within reach: load an image, set the filter parameters, and get machine-readable coordinates for the objects it finds. It keeps the objects ("lids") that match a target count, size and shape.
 
 It ships as a standalone Windows program with an installer, so it can be used without Python or a command line.
 
